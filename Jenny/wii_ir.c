@@ -59,7 +59,7 @@ y: increases from top-bottom (0 to 767)
 */
 
 #define FOCAL_LENGTH_PIXELS 1100.0f // temp estimate wiimote val till calibration
-#define IRL_LED_SPACING_MM 1000.0f // sample value of 1m=1000mm temporarily
+#define IRL_LED_SPACING_MM 130.0f // sample value of 1m=1000mm temporarily
 
 /* USER CODE END PD */
 
@@ -188,40 +188,53 @@ int main(void)
 		  coord[1+2*i] = ((data[2+3*i] & 0xC0) << 2) | data[1+3*i];
 	  }
 
-    // CALCULATIONS START
-    // calculate centroid (x_center, y_center)
-    float x_center = (coord[0] + coord[2] + coord[4] + coord[6]) / 4.0f; // floating pnt division
-    float y_center = (coord[1] + coord[3] + coord[5] + coord[7]) / 4.0f;
+    uint8_t valid_blobs = 0;
+    if(coord[0] < 1023) valid_blobs++;
+    if(coord[1] < 1023) valid_blobs++;
+    if(coord[2] < 1023) valid_blobs++;
+    if(coord[3] < 1023) valid_blobs++;
 
-    // calculate angular offset
-    float pixel_offset_x = x_center - CAM_CENTER_X;
-    float pixel_offset_y = y_center - CAM_CENTER_Y;
-    // (y_center - CAM_CENTER_Y) means positive Y is down
-    // (CAM_CENTER_Y - y_center) means positive Y is up
-    // depends on orientation
-    float angular_error_x = pixel_offset_x * DEG_PER_PIX_X;
-    float angular_error_y = pixel_offset_y * DEG_PER_PIX_Y;
+    if(valid_blobs == 4){
+      // CALCULATIONS START
+      // calculate centroid (x_center, y_center)
+      float x_center = (coord[0] + coord[2] + coord[4] + coord[6]) / 4.0f; // floating pnt division
+      float y_center = (coord[1] + coord[3] + coord[5] + coord[7]) / 4.0f;
 
-    // calculate distance/depth
-    // arbitrarily chosen to be between blob0 and 1
-    // fabsf() is floating-point absolute value from math.h
-    float dist_pix = fabsf((float)coord[2] - (float)coord[0]);
-    
-    float distance_mm = 0.0f;
-    if (dist_pix > 0) // div by zero prevent
-    {
-      distance_mm = (FOCAL_LENGTH_PIXELS * IRL_LED_SPACING_MM) / dist_pix;
-    }
+      // calculate angular offset
+      float pixel_offset_x = x_center - CAM_CENTER_X;
+      float pixel_offset_y = y_center - CAM_CENTER_Y;
+      // (y_center - CAM_CENTER_Y) means positive Y is down
+      // (CAM_CENTER_Y - y_center) means positive Y is up
+      // depends on orientation
+      float angular_error_x = pixel_offset_x * DEG_PER_PIX_X;
+      float angular_error_y = pixel_offset_y * DEG_PER_PIX_Y;
 
-    // send to LPUART1/Xbee (connect to wherever ig)
+      // calculate distance/depth
+      // arbitrarily chosen to be between blob0 and 1
+      // fabsf() is floating-point absolute value from math.h
+      float dist_pix = fabsf((float)coord[2] - (float)coord[0]);
+      
+      float distance_mm = 0.0f;
+      if (dist_pix > 0) // div by zero prevent
+      {
+        distance_mm = (FOCAL_LENGTH_PIXELS * IRL_LED_SPACING_MM) / dist_pix;
+      }
+
+      // send to LPUART1/Xbee (connect to wherever ig)
       printf("X:%.2f,Y:%.2f,D:%.1f\r\n", angular_error_x, angular_error_y, distance_mm);
-    
+      // make sure in cubeide settings the float output is enabled
+      // so Project -> Properties -> C/C++ Build -> Settings -> MCU/MPU GCC Linker 
+      // -> Miscellaneous -> other flags add "-u _printf_float"
 
-    // PROBABLY want an if/else for when no target is detected
-    // have to test what the output is if not detected
-    // also have to consider cases for <4 blobs detected?
-    
-    // CALCULATIONS DONE 
+      // PROBABLY want an if/else for when no target is detected
+      // have to test what the output is if not detected
+      // also have to consider cases for <4 blobs detected?
+      
+      // CALCULATIONS DONE 
+
+    } else {
+      printf("No Target\r\n")
+    }
 
 	  printf("Data Number %d \r\n", counter);
 	  for(int i = 0; i < 4; i++) {
@@ -347,7 +360,7 @@ static void MX_LPUART1_UART_Init(void)
 
   /* USER CODE END LPUART1_Init 1 */
   hlpuart1.Instance = LPUART1;
-  hlpuart1.Init.BaudRate = 115200;
+  hlpuart1.Init.BaudRate = 9600;
   hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
   hlpuart1.Init.StopBits = UART_STOPBITS_1;
   hlpuart1.Init.Parity = UART_PARITY_NONE;
