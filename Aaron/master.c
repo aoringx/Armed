@@ -22,6 +22,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "string.h"
+#include "stdio.h"
+#include "math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +34,38 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define NHD_W_M 0x50
+
+#define WII_IR_MAXSIZE_REGISTER 0x06
+#define WII_IR_GAIN_REGISTER 0x08
+#define WII_IR_GAINLIMIT_REGISTER 0x1A
+#define WII_IR_MINSIZE_REGISTER 0x1B
+#define WII_IR_CONTROL_REGISTER 0x30
+#define WII_IR_OUTPUT_MODE_REGISTER 0x33
+#define WII_IR_READ_ADDRESS 0x37
+
+#define CAM_WIDTH 1024.0f // .0f decimal + float, prevent integer division
+#define CAM_HEIGHT 768.0f
+#define CAM_CENTER_X (CAM_WIDTH / 2.0f) // 512
+#define CAM_CENTER_Y (CAM_HEIGHT / 2.0f) // 384
+
+#define CAM_FOV_H 33.0f  // horizontal FOV in degrees
+#define CAM_FOV_V 23.0f  // vertical FOV in degrees
+#define DEG_PER_PIX_X (CAM_FOV_H / CAM_WIDTH)   // 33.0 / 1024.0 deg/pix
+#define DEG_PER_PIX_Y (CAM_FOV_V / CAM_HEIGHT)  // 23.0 / 768.0 deg/pix
+
+#define IR_W_M 0xB0 //0x84
+#define IR_R_M 0xB1 //0x85
+
+/*
+coordinate system
+
+origin (0,0) is at the top left corner
+x: increases from left-right (0 to 1023)
+y: increases from top-bottom (0 to 767)
+*/
+
+#define FOCAL_LENGTH_PIXELS 1100.0f // temp estimate wiimote val till calibration
+#define IRL_LED_SPACING_MM 130.0f // sample value of 1m=1000mm temporarily
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -42,6 +76,8 @@
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 
+UART_HandleTypeDef hlpuart1;
+
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
 
@@ -49,11 +85,13 @@ TIM_HandleTypeDef htim4;
 int hapticSwitch = 0;
 int laserSwitch = 0;
 int soundSwitch = 0;
-char* hapticDisplay = "";
-char* laserDisplay = "";
-char* soundDisplay = "";
+char distanceDisplay[20] = "";
+char hapticDisplay[20] = "";
+char laserDisplay[20] = "";
+char soundDisplay[20] = "";
 int buzzPeriod = 99;
-float distance = 0;
+float distance = 10;
+int counter = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -62,6 +100,7 @@ static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_LPUART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -168,28 +207,20 @@ void NHDInit() {
 	setBrightness(8);
 }
 
-void setHapticDisplay(int hapticSwitch, char** hapticDisplay) {
-	if (hapticSwitch) {
-		 *hapticDisplay = "Haptics: On";
-	} else {
-		 *hapticDisplay = "Haptics: Off";
-	}
+void setDistanceDislpay(float distance, char* distanceDisplay) {
+	sprintf(distanceDisplay, "Distance: %.2f", distance);
 }
 
-void setLaserDisplay(int laserSwitch, char** laserDisplay) {
-	if (laserSwitch) {
-		*laserDisplay = "Laser: On";
-	} else {
-		*laserDisplay = "Laser: Off";
-	}
+void setHapticDisplay(int hapticSwitch, char* hapticDisplay) {
+	sprintf(hapticDisplay, "Haptics: %s", hapticSwitch ? "On" : "Off");
 }
 
-void setSoundDisplay(int SoundSwitch, char** SoundDisplay) {
-	if (SoundSwitch) {
-		*SoundDisplay = "Sound: On";
-	} else {
-		*SoundDisplay = "Sound: Off";
-	}
+void setLaserDisplay(int laserSwitch, char* laserDisplay) {
+	sprintf(laserDisplay, "Laser: %s", laserSwitch ? "On" : "Off");
+}
+
+void setSoundDisplay(int SoundSwitch, char* SoundDisplay) {
+	sprintf(SoundDisplay, "Sound: %s", SoundSwitch ? "On" : "Off");
 }
 
 void updateBuzzPeriod(int period) {
@@ -205,14 +236,15 @@ void stateInit() {
 	laserSwitch = HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_12);
 	soundSwitch = HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_14);
 
-	setHapticDisplay(hapticSwitch, &hapticDisplay);
-	setLaserDisplay(laserSwitch, &laserDisplay);
-	setSoundDisplay(soundSwitch, &soundDisplay);
+	setDistanceDislpay(distance, distanceDisplay);
+	setHapticDisplay(hapticSwitch, hapticDisplay);
+	setLaserDisplay(laserSwitch, laserDisplay);
+	setSoundDisplay(soundSwitch, soundDisplay);
 }
 
 void refreshDisplay() {
 	clearScreen();
-	writeStringFirstLine("EECS 373");
+	writeStringFirstLine(distanceDisplay);
 	writeStringSecondLine(hapticDisplay);
 	writeStringThirdLine(laserDisplay);
 	writeStringFourthLine(soundDisplay);
@@ -244,24 +276,35 @@ void hapticOff() {
 	HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_4);
 }
 
+void laserOn() {
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_SET);
+}
+
+void laserOff() {
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
+}
+
 
 void HAL_GPIO_EXTI_Callback(uint16_t pin) {
 	if (pin == GPIO_PIN_10) {
 		hapticSwitch = HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_10);
-		setHapticDisplay(hapticSwitch, &hapticDisplay);
+		setHapticDisplay(hapticSwitch, hapticDisplay);
 		if (hapticSwitch) {
 			hapticOn();
 		} else {
 			hapticOff();
 		}
-//		buzzPeriod += 10;
 	} else if (pin == GPIO_PIN_12) {
 		laserSwitch = HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_12);
-		setLaserDisplay(laserSwitch, &laserDisplay);
-		buzzPeriod -= 10;
+		setLaserDisplay(laserSwitch, laserDisplay);
+		if (laserSwitch) {
+			laserOn();
+		} else {
+			laserOff();
+		}
 	} else if (pin == GPIO_PIN_14) {
 		soundSwitch = HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_14);
-		setSoundDisplay(soundSwitch, &soundDisplay);
+		setSoundDisplay(soundSwitch, soundDisplay);
 		if (soundSwitch) {
 			soundOn();
 		} else {
@@ -275,9 +318,47 @@ void HAL_GPIO_EXTI_Callback(uint16_t pin) {
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM2) {
 		measureDistance();
+		setDistanceDislpay(distance, distanceDisplay);
 		calculateBuzzPeriod();
 		updateBuzzPeriod(buzzPeriod);
+		refreshDisplay();
 	}
+}
+
+void wiiCameraInit(){
+	uint8_t buf[14] = {WII_IR_CONTROL_REGISTER};
+	buf[1] = 0x01; // enable
+	HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 2, 1000);
+
+	// Configure Output Format
+	buf[0] = WII_IR_OUTPUT_MODE_REGISTER;
+	buf[1] = 0x33; // Medium Output Mode
+	HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 2, 1000);
+
+	// Configure MAXSIZE Register
+	buf[0] = WII_IR_MAXSIZE_REGISTER;
+	buf[1] = 0x90; // Ranges from 0x00-0xFF, Higher means more sensitive to IR light (but more noise
+	HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 2, 1000);
+
+	// Configure GAIN Register
+	buf[0] = WII_IR_GAIN_REGISTER;
+	buf[1] = 0xC0; // Ranges from 0x00-0xFF (Increasing means decreasing IR filter)
+	HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 2, 1000);
+
+	// Configure GAINLIMIT Register
+	buf[0] = WII_IR_GAINLIMIT_REGISTER;
+	buf[1] = 0x40; // Ranges from 0x00-0xFF (Increasing means decreasing sensitivity and false positives)
+	HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 2, 1000);
+
+	// Configure MINSIZE Register
+	buf[0] = WII_IR_MINSIZE_REGISTER;
+	buf[1] = 0x03; // Ranges from 0x00-0xFF (Decides minimum blobsize: typically valued 3-5)
+	HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 2, 1000);
+
+	// Start Wii Camera Data Collection
+	buf[0] = 0x30;
+	buf[1] = 0x08;
+	HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 2, 1000);
 }
 
 /* USER CODE END 0 */
@@ -314,6 +395,7 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_TIM4_Init();
+  MX_LPUART1_UART_Init();
   /* USER CODE BEGIN 2 */
   NHDInit();
   stateInit();
@@ -321,6 +403,7 @@ int main(void)
 //  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   updateBuzzPeriod(buzzPeriod);
   HAL_TIM_Base_Start_IT(&htim2);
+  wiiCameraInit();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -330,7 +413,78 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  /* Wii IR Data Read */
+	  uint8_t buf[14];
+	  buf[0] = WII_IR_READ_ADDRESS; // Address to read output data
+	  HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 1, 1000);
+	  uint8_t data[12];
+	  HAL_I2C_Master_Receive(&hi2c1, IR_R_M, &data[0], 12, 1000);
 
+	  int16_t coord[8]; // Pairs of two are the x and y coordinate of each point
+
+	  for(int i = 0; i < 4; i++) {
+		// max 10 bits but with a 4:3 aspect ratio,
+		// assuming horizontal resolution is 1024,
+		// vertical resolution is 1024 * 3/4 = 768
+		// 128 x 96 -> scaled up to 1024 x 768
+		  coord[0+2*i] = ((data[2+3*i] & 0x30) << 4) | data[0+3*i];
+		  coord[1+2*i] = ((data[2+3*i] & 0xC0) << 2) | data[1+3*i];
+	  }
+
+	  uint8_t valid_blobs = 0;
+	  if(coord[0] < 1023) valid_blobs++;
+	  if(coord[1] < 1023) valid_blobs++;
+	  if(coord[2] < 1023) valid_blobs++;
+	  if(coord[3] < 1023) valid_blobs++;
+
+	  if (valid_blobs == 4){
+		  // CALCULATIONS START
+		  // calculate centroid (x_center, y_center)
+		  float x_center = (coord[0] + coord[2] + coord[4] + coord[6]) / 4.0f; // floating pnt division
+		  float y_center = (coord[1] + coord[3] + coord[5] + coord[7]) / 4.0f;
+
+		  // calculate angular offset
+		  float pixel_offset_x = x_center - CAM_CENTER_X;
+		  float pixel_offset_y = y_center - CAM_CENTER_Y;
+		  // (y_center - CAM_CENTER_Y) means positive Y is down
+		  // (CAM_CENTER_Y - y_center) means positive Y is up
+		  // depends on orientation
+		  float angular_error_x = pixel_offset_x * DEG_PER_PIX_X;
+		  float angular_error_y = pixel_offset_y * DEG_PER_PIX_Y;
+
+		  // calculate distance/depth
+		  // arbitrarily chosen to be between blob0 and 1
+		  // fabsf() is floating-point absolute value from math.h
+		  float dist_pix = fabsf((float)coord[2] - (float)coord[0]);
+
+		  float distance_mm = 0.0f;
+		  if (dist_pix > 0) // div by zero prevent
+		  {
+			distance_mm = (FOCAL_LENGTH_PIXELS * IRL_LED_SPACING_MM) / dist_pix;
+		  }
+
+		  // send to LPUART1/Xbee (connect to wherever ig)
+			printf("X:%.2f,Y:%.2f,D:%.1f\r\n", angular_error_x, angular_error_y, distance_mm);
+
+
+		  // PROBABLY want an if/else for when no target is detected
+		  // have to test what the output is if not detected
+		  // also have to consider cases for <4 blobs detected?
+
+		  // CALCULATIONS DONE
+	  } else {
+		  printf("No Target\r\n");
+	  }
+
+	  printf("Data Number %d \r\n", counter);
+	  for(int i = 0; i < 4; i++) {
+		  printf("Coordinate %d: (%d, %d) \r\n", i, coord[0+2*i], coord[1+2*i]);
+	  }
+
+	  /* Wii IR Data Read Competed */
+	  counter++;
+
+	  HAL_Delay(1000);
 
 
   }
@@ -426,6 +580,54 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief LPUART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_LPUART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN LPUART1_Init 0 */
+
+  /* USER CODE END LPUART1_Init 0 */
+
+  /* USER CODE BEGIN LPUART1_Init 1 */
+
+  /* USER CODE END LPUART1_Init 1 */
+  hlpuart1.Instance = LPUART1;
+  hlpuart1.Init.BaudRate = 115200;
+  hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
+  hlpuart1.Init.StopBits = UART_STOPBITS_1;
+  hlpuart1.Init.Parity = UART_PARITY_NONE;
+  hlpuart1.Init.Mode = UART_MODE_TX_RX;
+  hlpuart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  hlpuart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  hlpuart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  hlpuart1.FifoMode = UART_FIFOMODE_DISABLE;
+  if (HAL_UART_Init(&hlpuart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&hlpuart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&hlpuart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&hlpuart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN LPUART1_Init 2 */
+
+  /* USER CODE END LPUART1_Init 2 */
 
 }
 
@@ -575,6 +777,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
   HAL_PWREx_EnableVddIO2();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : PE2 PE3 */
   GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -635,10 +840,11 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB2 PB6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  /*Configure GPIO pin : PB2 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PE7 PE8 PE9 PE11
@@ -688,14 +894,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PG7 PG8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF8_LPUART1;
-  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC6 */
   GPIO_InitStruct.Pin = GPIO_PIN_6;
@@ -769,6 +967,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 3, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
@@ -779,7 +983,16 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+#ifdef __GNUC__
+#define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
+#else
+  #define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
+#endif /* __GNUC__ */
+PUTCHAR_PROTOTYPE
+{
+  HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, 0xFFFF);
+  return ch;
+}
 /* USER CODE END 4 */
 
 /**
