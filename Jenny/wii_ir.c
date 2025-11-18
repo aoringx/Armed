@@ -77,6 +77,7 @@ UART_HandleTypeDef hlpuart1;
 #define IR_W_M 0xB0 //0x84
 #define IR_R_M 0xB1 //0x85
 
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,7 +91,54 @@ static void MX_LPUART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void calc(int16_t coord[8]){
+  uint8_t valid_blobs = 0;
+  if(coord[0] < 1023) valid_blobs++;
+  if(coord[1] < 1023) valid_blobs++;
+  if(coord[2] < 1023) valid_blobs++;
+  if(coord[3] < 1023) valid_blobs++;
 
+  if(valid_blobs == 4){
+    // CALCULATIONS START
+    // calculate centroid (x_center, y_center)
+    float x_center = (coord[0] + coord[2] + coord[4] + coord[6]) / 4.0f; // floating pnt division
+    float y_center = (coord[1] + coord[3] + coord[5] + coord[7]) / 4.0f;
+
+    // calculate angular offset
+    float pixel_offset_x = x_center - CAM_CENTER_X;
+    float pixel_offset_y = y_center - CAM_CENTER_Y;
+    // (y_center - CAM_CENTER_Y) means positive Y is down
+    // (CAM_CENTER_Y - y_center) means positive Y is up
+    // depends on orientation
+    float angular_error_x = pixel_offset_x * DEG_PER_PIX_X;
+    float angular_error_y = pixel_offset_y * DEG_PER_PIX_Y;
+
+    // calculate distance/depth
+    // arbitrarily chosen to be between blob0 and 1
+    // fabsf() is floating-point absolute value from math.h
+    float dist_pix = fabsf((float)coord[2] - (float)coord[0]);
+    
+    float distance_mm = 0.0f;
+    if (dist_pix > 0) // div by zero prevent
+    {
+      distance_mm = (FOCAL_LENGTH_PIXELS * IRL_LED_SPACING_MM) / dist_pix;
+    }
+
+    // send to LPUART1/Xbee (connect to wherever ig)
+    printf("X:%.2f,Y:%.2f,D:%.1f\r\n", angular_error_x, angular_error_y, distance_mm);
+    // make sure in cubeide settings the float output is enabled
+    // so Project -> Properties -> C/C++ Build -> Settings -> MCU/MPU GCC Linker 
+    // -> Miscellaneous -> other flags add "-u _printf_float"
+
+    // PROBABLY want an if/else for when no target is detected
+    // have to test what the output is if not detected
+    // also have to consider cases for <4 blobs detected?
+    
+    // CALCULATIONS DONE 
+  } else {
+    printf("No Target\r\n")
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -188,53 +236,7 @@ int main(void)
 		  coord[1+2*i] = ((data[2+3*i] & 0xC0) << 2) | data[1+3*i];
 	  }
 
-    uint8_t valid_blobs = 0;
-    if(coord[0] < 1023) valid_blobs++;
-    if(coord[1] < 1023) valid_blobs++;
-    if(coord[2] < 1023) valid_blobs++;
-    if(coord[3] < 1023) valid_blobs++;
-
-    if(valid_blobs == 4){
-      // CALCULATIONS START
-      // calculate centroid (x_center, y_center)
-      float x_center = (coord[0] + coord[2] + coord[4] + coord[6]) / 4.0f; // floating pnt division
-      float y_center = (coord[1] + coord[3] + coord[5] + coord[7]) / 4.0f;
-
-      // calculate angular offset
-      float pixel_offset_x = x_center - CAM_CENTER_X;
-      float pixel_offset_y = y_center - CAM_CENTER_Y;
-      // (y_center - CAM_CENTER_Y) means positive Y is down
-      // (CAM_CENTER_Y - y_center) means positive Y is up
-      // depends on orientation
-      float angular_error_x = pixel_offset_x * DEG_PER_PIX_X;
-      float angular_error_y = pixel_offset_y * DEG_PER_PIX_Y;
-
-      // calculate distance/depth
-      // arbitrarily chosen to be between blob0 and 1
-      // fabsf() is floating-point absolute value from math.h
-      float dist_pix = fabsf((float)coord[2] - (float)coord[0]);
-      
-      float distance_mm = 0.0f;
-      if (dist_pix > 0) // div by zero prevent
-      {
-        distance_mm = (FOCAL_LENGTH_PIXELS * IRL_LED_SPACING_MM) / dist_pix;
-      }
-
-      // send to LPUART1/Xbee (connect to wherever ig)
-      printf("X:%.2f,Y:%.2f,D:%.1f\r\n", angular_error_x, angular_error_y, distance_mm);
-      // make sure in cubeide settings the float output is enabled
-      // so Project -> Properties -> C/C++ Build -> Settings -> MCU/MPU GCC Linker 
-      // -> Miscellaneous -> other flags add "-u _printf_float"
-
-      // PROBABLY want an if/else for when no target is detected
-      // have to test what the output is if not detected
-      // also have to consider cases for <4 blobs detected?
-      
-      // CALCULATIONS DONE 
-
-    } else {
-      printf("No Target\r\n")
-    }
+    calc(coord);
 
 	  printf("Data Number %d \r\n", counter);
 	  for(int i = 0; i < 4; i++) {
