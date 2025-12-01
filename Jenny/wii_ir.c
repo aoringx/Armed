@@ -318,6 +318,12 @@ void xbee_enable_api_mode() { // one time enable
 }
 
 uint8_t calculate_checksum(uint8_t* data, int length) {
+  /*
+  xbee error checking purposes
+  add up all the bytes in the frame (from frame type ~ parameter value)
+  keep only the lowest 8 bits of that sum (basically sum % 256)
+  subtract from 0xFF (255 in decimal)
+  */
   uint16_t sum = 0;
   for(int i = 0; i < length; i++) {
       sum += data[i];
@@ -326,37 +332,43 @@ uint8_t calculate_checksum(uint8_t* data, int length) {
 }
 
 void xbee_set_high_api() {
-  // Local AT Command frame (0x08) - simpler, for local XBee
+  // 7E | Length | Frame Type | Frame ID | Dest Address | Options | AT Command | Value | Checksum
   uint8_t frame[] = {
-    0x7E,        // Start delimiter
-    0x00, 0x05,  // Length (5 bytes)
-    0x08,        // Frame Type: AT command
-    0x01,        // Frame ID (1 = want response)
-    'D', '0',    // AT Command: D0
-    0x05,        // Parameter: 5 = digital output high
-    0x00         // Checksum (will calculate)
+    0x7E,                                             // start delimiter 
+    0x00, 0x10,                                       // data size following (16 bytes)
+    0x17,                                             // frame type (remote AT)
+    0x05,                                             // frame ID (any value 0x01-0xFF)
+    0x00, 0x13, 0xA2, 0x00, 0x41, 0x76, 0xEA, 0xC6,   // 8 byte = 64-bit destination addr of the remote XBee
+    0xFF, 0xFE,                                       // 2 byte = 16 bit network addr
+    0x02,                                             // command option (0x02 for apply imm)
+    0x44, 0x30,                                       // AT command "D0" in ASCII hex
+    0x05,                                             // parameter value (0x05 for HIGH)
+    0x00                                              // checksum (not included in length), temporarily 0 
   };
   
   // calculate checksum (from byte 3 to end-1)
-  frame[8] = calculate_checksum(&frame[3], 5);
+  frame[19] = calculate_checksum(&frame[3], 15);
   
   // send frame
-  HAL_UART_Transmit(&hlpuart1, frame, 9, 100);
+  HAL_UART_Transmit(&hlpuart1, frame, 20, 100);       // send 20 bytes
 }
 
 void xbee_set_low_api() {
   uint8_t frame[] = {
-    0x7E,        // start delimiter
-    0x00, 0x05,  // length (5 bytes)
-    0x08,        // frame Type: AT command
-    0x01,        // frame ID
-    'D', '0',    // AT Command: D0
-    0x04,        // parameter: 4 = digital output low
-    0x00         // checksum (will calculate)
+    0x7E,                                             // start delimiter 
+    0x00, 0x10,                                       // data size following (16 bytes)
+    0x17,                                             // frame type (remote AT)
+    0x05,                                             // frame ID (any value 0x01-0xFF)
+    0x00, 0x13, 0xA2, 0x00, 0x41, 0x76, 0xEA, 0xC6,   // 8 byte = 64-bit destination addr of the remote XBee
+    0xFF, 0xFE,                                       // 2 byte = 16 bit network addr
+    0x02,                                             // command option (0x02 for apply imm)
+    0x44, 0x30,                                       // AT command "D0" in ASCII hex
+    0x04,                                             // parameter value (0x04 for LOW)
+    0x00                                              // checksum (not included in length), temporarily 0 
   };
   
-  frame[8] = calculate_checksum(&frame[3], 5);
-  HAL_UART_Transmit(&hlpuart1, frame, 9, 100);
+  frame[19] = calculate_checksum(&frame[3], 15);
+  HAL_UART_Transmit(&hlpuart1, frame, 20, 100);
 }
 
 // temporary test xbee code end
