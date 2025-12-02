@@ -289,34 +289,6 @@ void calculateBuzzPeriod() {
 	buzzPeriod = 40 * pixel_offset_log / 5;
 }
 
-// temporary test xbee code begin
-
-/*
-permanent config
-AP parameter (API Enable)
-Set AP = 1 (API Mode without escapes)
-Click "Write" button to save to XBee
-*/
-
-// code w/o xctu
-void xbee_enable_api_mode() { // one time enable
-  HAL_Delay(1100);
-  char enter[] = "+++";
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)enter, 3, 100);
-  HAL_Delay(1100);
-  
-  char cmd1[] = "ATAP 1\r";  // Enable API mode
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)cmd1, strlen(cmd1), 100);
-  
-  char cmd2[] = "ATWR\r";    // Write to flash (permanent)
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)cmd2, strlen(cmd2), 100);
-  
-  char cmd3[] = "ATCN\r";
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)cmd3, strlen(cmd3), 100);
-  
-  // Reboot XBee for changes to take effect
-}
-
 uint8_t calculate_checksum(uint8_t* data, int length) {
   /*
   xbee error checking purposes
@@ -335,66 +307,42 @@ void xbee_set_high_api() {
   // 7E | Length | Frame Type | Frame ID | Dest Address | Options | AT Command | Value | Checksum
   uint8_t frame[] = {
     0x7E,                                             // start delimiter 
-    0x00, 0x10,                                       // data size following (16 bytes)
+    0x00, 0x10,                                       // data size following (16 bytes = 0x10)
     0x17,                                             // frame type (remote AT)
-    0x05,                                             // frame ID (any value 0x01-0xFF)
-    0x00, 0x13, 0xA2, 0x00, 0x41, 0x76, 0xEA, 0xC6,   // 8 byte = 64-bit destination addr of the remote XBee
+    0x01,                                             // frame ID (any value 0x01-0xFF)
+    0x00, 0x13, 0xA2, 0x00, 0x41, 0x76, 0xE8, 0x00,   // 8 byte = 64-bit destination addr of the remote XBee
     0xFF, 0xFE,                                       // 2 byte = 16 bit network addr
     0x02,                                             // command option (0x02 for apply imm)
     0x44, 0x30,                                       // AT command "D0" in ASCII hex
     0x05,                                             // parameter value (0x05 for HIGH)
-    0x00                                              // checksum (not included in length), temporarily 0 
+    0x1B                                              // checksum (not included in length), temporarily 0 
   };
   
   // calculate checksum (from byte 3 to end-1)
-  frame[19] = calculate_checksum(&frame[3], 15);
+  // frame[19] = calculate_checksum(&frame[3], 16);
   
   // send frame
-  HAL_UART_Transmit(&hlpuart1, frame, 20, 100);       // send 20 bytes
+  HAL_UART_Transmit(&hlpuart1, frame, sizeof(frame), 100);       // send 20 bytes
 }
 
+// https://docs.digi.com/resources/documentation/digidocs/pdfs/90000982.pdf
+// page 98
 void xbee_set_low_api() {
   uint8_t frame[] = {
     0x7E,                                             // start delimiter 
-    0x00, 0x10,                                       // data size following (16 bytes)
+    0x00, 0x10,                                       // data size between frame type - param val (16 bytes)
     0x17,                                             // frame type (remote AT)
-    0x05,                                             // frame ID (any value 0x01-0xFF)
-    0x00, 0x13, 0xA2, 0x00, 0x41, 0x76, 0xEA, 0xC6,   // 8 byte = 64-bit destination addr of the remote XBee
+    0x01,                                             // frame ID (any value 0x01-0xFF)
+    0x00, 0x13, 0xA2, 0x00, 0x41, 0x76, 0xE8, 0x00,   // 8 byte = 64-bit destination addr of the remote XBee
     0xFF, 0xFE,                                       // 2 byte = 16 bit network addr
     0x02,                                             // command option (0x02 for apply imm)
     0x44, 0x30,                                       // AT command "D0" in ASCII hex
     0x04,                                             // parameter value (0x04 for LOW)
-    0x00                                              // checksum (not included in length), temporarily 0 
+    0x1C                                              // checksum (not included in length), temporarily 0 
   };
   
-  frame[19] = calculate_checksum(&frame[3], 15);
-  HAL_UART_Transmit(&hlpuart1, frame, 20, 100);
-}
-
-// temporary test xbee code end
-
-void xbee_set(char cmd1[] = "ATD0 4\r") {
-  uint8_t rxBuffer[10];
-
-  HAL_Delay(1100);
-  char enter[] = "+++";
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)enter, 3, 100);
-  HAL_Delay(1100);
-  HAL_UART_Receive(&hlpuart1, rxBuffer, 3, 500);  // Read "OK\r" -> check this
-
-  // D0 = 5 (digital output high)
-  // D0 = 4 (digital output low)
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)cmd1, strlen(cmd1), 100);
-  // HAL_UART_Receive(&hlpuart1, rxBuffer, 3, 500);  // Read response
-
-  // apply
-  char cmd2[] = "ATAC\r";
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)cmd2, strlen(cmd2), 100);
-  // HAL_UART_Receive(&hlpuart1, rxBuffer, 3, 500);  // Read response
-
-  // exit
-  char cmd3[] = "ATCN\r";
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)cmd3, strlen(cmd3), 100);
+  // frame[19] = calculate_checksum(&frame[3], 16);
+  HAL_UART_Transmit(&hlpuart1, frame, sizeof(frame), 100);
 }
 
 void topLEDOn(){
@@ -678,13 +626,14 @@ int main(void)
   MX_LPUART1_UART_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  NHDInit();
-  stateInit();
-  refreshDisplay();
-  updateBuzzPeriod(buzzPeriod);
-  HAL_TIM_Base_Start_IT(&htim3);
-  wiiCameraInit();
-  LEDInit();
+  // NHDInit();
+  // stateInit();
+  // refreshDisplay();
+  // updateBuzzPeriod(buzzPeriod);
+  // HAL_TIM_Base_Start_IT(&htim3);
+  // wiiCameraInit();
+  // LEDInit();
+  // commented out for solely testing xbee
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -694,11 +643,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
-	  HAL_Delay(10000);
-//	  makeSound(2000);
-
-
+    xbee_set_high_api();
+	  HAL_Delay(2000);
+    xbee_set_low_api();
+    HAL_Delay(2000);
   }
   /* USER CODE END 3 */
 }
