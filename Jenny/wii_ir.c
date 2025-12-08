@@ -507,74 +507,88 @@ void wiiCameraInit(){
 }
 
 void wiiCameraRead(){
-	  uint8_t buf[14];
-	  buf[0] = WII_IR_READ_ADDRESS; // Address to read output data
-	  HAL_I2C_Master_Transmit(&hi2c1, IR_W_M, &buf[0], 1, 1000);
-	  uint8_t data[12];
-	  HAL_I2C_Master_Receive(&hi2c1, IR_R_M, &data[0], 12, 1000);
+  int16_t coord[8]; // Pairs of two are the x and y coordinate of each point
 
-	  int16_t coord[8]; // Pairs of two are the x and y coordinate of each point
+  for(int i = 0; i < 4; i++) {
+  // max 10 bits but with a 4:3 aspect ratio,
+  // assuming horizontal resolution is 1024,
+  // vertical resolution is 1024 * 3/4 = 768
+  // 128 x 96 -> scaled up to 1024 x 768
+  // wii_ir_data reads in 12 bytes total, so 3 bytes per data point 
+  // byte0 = X_low (8 bits)
+  // byte1 = Y_low (8 bits)
+  // byte2 = [Y_high (2 bits), X_high (2 bits), size (4 bits)]
+    coord[0+2*i] = ((wii_ir_data[2+3*i] & 0x30) << 4) | wii_ir_data[0+3*i]; 
+    coord[1+2*i] = ((wii_ir_data[2+3*i] & 0xC0) << 2) | wii_ir_data[1+3*i];
+  }
 
-	  for(int i = 0; i < 4; i++) {
-		// max 10 bits but with a 4:3 aspect ratio,
-		// assuming horizontal resolution is 1024,
-		// vertical resolution is 1024 * 3/4 = 768
-		// 128 x 96 -> scaled up to 1024 x 768
-		  coord[0+2*i] = ((data[2+3*i] & 0x30) << 4) | data[0+3*i];
-		  coord[1+2*i] = ((data[2+3*i] & 0xC0) << 2) | data[1+3*i];
-	  }
+  uint8_t valid_blobs = 0;
+  if(coord[0] < 1023) valid_blobs++;
+  if(coord[2] < 1023) valid_blobs++;
+  if(coord[4] < 1023) valid_blobs++;
+  if(coord[6] < 1023) valid_blobs++;
 
-	  uint8_t valid_blobs = 0;
-	  if(coord[0] < 1023) valid_blobs++;
-	  if(coord[1] < 1023) valid_blobs++;
-	  if(coord[2] < 1023) valid_blobs++;
-	  if(coord[3] < 1023) valid_blobs++;
+  if (valid_blobs == 4){
+    // CALCULATIONS START
+    // calculate centroid (x_center, y_center)
+    x_center = (coord[0] + coord[2] + coord[4] + coord[6]) / 4.0f; // floating pnt division
+    y_center = (coord[1] + coord[3] + coord[5] + coord[7]) / 4.0f;
 
-	  if (valid_blobs == 4){
-			// CALCULATIONS START
-			// calculate centroid (x_center, y_center)
-			x_center = (coord[0] + coord[2] + coord[4] + coord[6]) / 4.0f; // floating pnt division
-			y_center = (coord[1] + coord[3] + coord[5] + coord[7]) / 4.0f;
+    // calculate angular offset
+    pixel_offset_x = x_center - CAM_CENTER_X;
+    pixel_offset_y = y_center - CAM_CENTER_Y;
+    // (y_center - CAM_CENTER_Y) means positive Y is down
+    // (CAM_CENTER_Y - y_center) means positive Y is up
+    // depends on orientation
+    angular_error_x = pixel_offset_x * DEG_PER_PIX_X;
+    angular_error_y = pixel_offset_y * DEG_PER_PIX_Y;
 
-			// calculate angular offset
-			pixel_offset_x = x_center - CAM_CENTER_X;
-			pixel_offset_y = y_center - CAM_CENTER_Y;
-			// (y_center - CAM_CENTER_Y) means positive Y is down
-			// (CAM_CENTER_Y - y_center) means positive Y is up
-			// depends on orientation
-			angular_error_x = pixel_offset_x * DEG_PER_PIX_X;
-			angular_error_y = pixel_offset_y * DEG_PER_PIX_Y;
+    // calculate distance/depth
+    int idx_left = 0;
+    int idx_right = 0;
+    float max_dx = -1;
 
-			// calculate distance/depth
-			// arbitrarily chosen to be between blob0 and 1
-			// fabsf() is floating-point absolute value from math.h
-			dist_pix = fabsf((float)coord[2] - (float)coord[0]);
+    for(int i = 0; i < 4; i++) {
+      for(int j = i+1; j < 4; j++) {
+          float dx = fabs(coord[2*j] - coord[2*i]); // x difference
+          if (dx > max_dx) {
+              max_dx = dx;
+              idx_left = i;
+              idx_right = j;
+          }
+      }
+    }
 
-			if (dist_pix > 0) // div by zero prevent
-			{
-			distance_mm = (FOCAL_LENGTH_PIXELS * IRL_LED_SPACING_MM) / dist_pix;
-			}
+    // no longer arbitrarily choosing to be between blob0 and 1
+    // but instead sort so distance value randomly spiking may be prevented
+    // fabsf() is floating-point absolute value from math.h
+    dist_pix = fabs(coord[2*idx_right] - coord[2*idx_left]);
 
-			// send to LPUART1/Xbee (connect to wherever ig)
+    // div by zero prevent
+    if (dist_pix > 0) distance_mm = (FOCAL_LENGTH_PIXELS * IRL_LED_SPACING_MM) / dist_pix;
+    
+
+    // send to LPUART1/Xbee (connect to wherever ig)
 //			printf("X:%.2f,Y:%.2f,D:%.1f\r\n", angular_error_x, angular_error_y, distance_mm);
 
-			distance = distance_mm / 1000;
+    distance_m = distance_mm / 1000;
 
 
-		  // PROBABLY want an if/else for when no target is detected
-		  // have to test what the output is if not detected
-		  // also have to consider cases for <4 blobs detected?
+    // PROBABLY want an if/else for when no target is detected
+    // have to test what the output is if not detected
+    // also have to consider cases for <4 blobs detected?
 
-		  // CALCULATIONS DONE
-	  } else {
+    // CALCULATIONS DONE
+  } else {
 //		  printf("No Target\r\n");
-	  }
+    distance_m = 666;
+  }
 
-	  for(int i = 0; i < 4; i++) {
+  for(int i = 0; i < 4; i++) {
 //		  printf("Coordinate %d: (%d, %d) \r\n", i, coord[0+2*i], coord[1+2*i]);
-	  }
+  }
 
-	  /* Wii IR Data Read Competed */
+  /* Wii IR Data Read Competed */
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
@@ -643,10 +657,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    xbee_set_high_api();
-	  HAL_Delay(2000);
-    xbee_set_low_api();
-    HAL_Delay(2000);
   }
   /* USER CODE END 3 */
 }
